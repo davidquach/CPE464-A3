@@ -21,12 +21,15 @@
 #define DATA 16
 #define END_OF_FILE 10
 #define FILENAME_INIT 8
+#define RR 5
+#define EOF_ACK 32
+
 
 int createPDU(uint8_t *pduBuffer, uint32_t sequenceNumber, uint8_t flag, uint8_t *payload, int payloadLen);
 void printPDU(uint8_t * PDU, int pduLength);
-void printInit(uint8_t * PDU, int pduLength);
-int send_buf(uint8_t *buf, int fileNameLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet);
+void printPacket(uint8_t * PDU, int pduLength);
+int send_init(uint8_t *buf, int dataLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet);
 int recv_buf(uint8_t *buf, int packetLen, int serverSocketNumber, struct Connection * client, uint8_t *flag, uint32_t *clientSeqNum);
-
+int send_buf(uint8_t *data, int dataLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet);
 
 #endif

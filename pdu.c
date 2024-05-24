@@ -19,8 +19,12 @@
 #define DATA 16
 #define END_OF_FILE 10
 #define FILENAME_INIT 8
+#define RR 5
+#define EOF_ACK 32
 
 
+
+// Adds PDU application level header to payload
 int createPDU(uint8_t *pduBuffer, uint32_t sequenceNumber, uint8_t flag, uint8_t *payload, int payloadLen) {
     uint32_t net_seq = htonl(sequenceNumber); // Convert sequence number to network order (using htonl for 32-bit)
 
@@ -40,11 +44,12 @@ int createPDU(uint8_t *pduBuffer, uint32_t sequenceNumber, uint8_t flag, uint8_t
     return pduLength;
 }
 
+// Print general PDU
 void printPDU(uint8_t * PDU, int pduLength) {
     
     // Verify checksum
     if (in_cksum((unsigned short *)PDU, pduLength) != 0) {
-        printf("Checksum is wrong\n");
+        printf("Checksum is wrong\n");//
         exit(1);
     }
 
@@ -52,7 +57,6 @@ void printPDU(uint8_t * PDU, int pduLength) {
     uint32_t netSequenceNum = 0;
     uint8_t flag = 0;
     
-
     // Decifer PDU
     memcpy(&netSequenceNum, PDU, seqNumLen); // Retrieve sequence number (4 bytes)
     uint32_t hostSequenceNum = ntohl(netSequenceNum); // Convert sequence number to host order
@@ -71,7 +75,8 @@ void printPDU(uint8_t * PDU, int pduLength) {
 
 }
 
-void printInit(uint8_t * PDU, int pduLength) {
+// Print packet based off flag
+void printPacket(uint8_t * PDU, int pduLength) {
     
     // Verify checksum
     if (in_cksum((unsigned short *)PDU, pduLength) != 0) {
@@ -99,16 +104,15 @@ void printInit(uint8_t * PDU, int pduLength) {
     uint8_t payload[payloadLen];
     memcpy(payload, PDU+7, payloadLen);
 
-    memcpy(&netBuff,  PDU + seqNumLen + chkSumLen + flagLen, 4); // Retrieve payload
-    memcpy(&netWindow,  PDU + seqNumLen + chkSumLen + flagLen + 4, 4); // Retrieve payload
-    memcpy(filename, PDU + seqNumLen + chkSumLen + flagLen + 8, filename_len);
-
-    uint32_t bufferSize = ntohl(netBuff);
-    uint32_t windowSize = ntohl(netWindow);
-    filename[filename_len] = '\0';
-
     if (flag == FILENAME_INIT)
     {
+        memcpy(&netBuff,  PDU + seqNumLen + chkSumLen + flagLen, 4); // Retrieve payload
+        memcpy(&netWindow,  PDU + seqNumLen + chkSumLen + flagLen + 4, 4); // Retrieve payload
+        memcpy(filename, PDU + seqNumLen + chkSumLen + flagLen + 8, filename_len);
+        uint32_t bufferSize = ntohl(netBuff);
+        uint32_t windowSize = ntohl(netWindow);
+        filename[filename_len] = '\0';
+
         printf("\n===Initial Packet======================================================================\n");
         printf("Sequence Number: %d  ", hostSequenceNum);
         printf("Flag: %d  ", flag);
@@ -116,14 +120,20 @@ void printInit(uint8_t * PDU, int pduLength) {
         printf("Window Size: %d  ", windowSize);
         printf("Filename: %s\n", filename);
         printf("========================================================================================\n");
-
     }
+
     else if (flag == DATA)
     {
         printf("\nData Packet\n");
         printf(" - Sequence Number: %d  ", hostSequenceNum);
         printf("   Flag: %d\n", flag);
         printf(" * Data: %s\n", payload);
+    }
+    else if (flag == RR) 
+    {
+        printf("\nRR %d\n", hostSequenceNum + 1);
+        printf(" - Sequence Number: %d  ", hostSequenceNum);
+        printf("   Flag: %d\n", flag);
     }
     else if (flag == END_OF_FILE)
     {
@@ -133,11 +143,19 @@ void printInit(uint8_t * PDU, int pduLength) {
         printf("========================================================================================\n");
 
     }
+    else if (flag == EOF_ACK)
+    {
+        printf("\n===EOF ACK=============================================================================\n");
+        printf(" - Sequence Number: %d  ", hostSequenceNum);
+        printf("   Flag: %d\n", flag);
+        printf("========================================================================================\n");
+    }
     
         
 }
 
-int send_buf(uint8_t *buf, int fileNameLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet) {
+// Send initial Filename/Establishment packet
+int send_init(uint8_t *buf, int fileNameLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet) {
     int payloadLen = 4 + 4 + fileNameLen; // Calculate payload length
     int packetLen = 7 + payloadLen;
     
@@ -147,19 +165,34 @@ int send_buf(uint8_t *buf, int fileNameLen, struct Connection * server, uint8_t 
         printf("\nSending Filename Response\n");
     
     else
-        printInit(packet, packetLen);
-    
+    {
+        // printPacket(packet, packetLen);
+    }
     
     int sendLen = safeSendto(server->sk_num, packet, packetLen, 0, (struct sockaddr *)&server->address, sizeof(server->address));
-    // printInit(packet, packetLen);
     
     return sendLen;
     
 }
 
+// Send general packets (Data, RRs, and SREJs)
+int send_buf(uint8_t *data, int dataLen, struct Connection * server, uint8_t flag, uint32_t *clientSeqNum, uint8_t *packet) 
+{
+    int packetLen = 7 + dataLen;
+    createPDU(packet, *clientSeqNum, flag, data, dataLen);
+    // printPacket(packet, packetLen);
+    
+    int sendLen = safeSendto(server->sk_num, packet, packetLen, 0, (struct sockaddr *)&server->address, sizeof(server->address));
+
+    return sendLen;
+    
+}
+
+// Receive all forms of packets
 int recv_buf(uint8_t *buf, int packetLen, int serverSocketNumber, struct Connection *client, uint8_t *flag, uint32_t *clientSeqNum) {
     struct sockaddr_storage clientAddr;
     int clientAddrLen = sizeof(clientAddr);
+
     int recvLen = safeRecvfrom(serverSocketNumber, buf, MAXPDUBUF, 0, (struct sockaddr *)&clientAddr, &clientAddrLen);
 
     // Store the client's address in the client structure
@@ -167,6 +200,7 @@ int recv_buf(uint8_t *buf, int packetLen, int serverSocketNumber, struct Connect
     memcpy(clientSeqNum, buf, 4);
     memcpy(flag, buf + 6, 1);
 
+    *clientSeqNum = ntohl(*clientSeqNum);
 
     if (*flag == FNAME_OK) 
     {
@@ -174,7 +208,7 @@ int recv_buf(uint8_t *buf, int packetLen, int serverSocketNumber, struct Connect
     }
     else if (*flag == FILENAME_INIT)
     { 
-        printInit(buf, recvLen);
+        // printPacket(buf, recvLen);
     }
 
 

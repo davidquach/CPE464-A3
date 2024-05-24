@@ -27,27 +27,31 @@
 #define MAXBUF 1400
 #define MAXPDUBUF 1407
 #define MAX_FILE 100
-#define START_SEQ_NUM 0
+#define START_SEQ_NUM 1
 #define NOTFILENAME 15
+#define MAX_RETRANS 10
 
 typedef enum State STATE;
 
 enum State
 {
-	START, DONE, FILENAME, SEND_DATA, WAIT_ON_EOF_ACK, WAIT_ON_ACK
+	START, DONE, FILENAME, SEND_DATA, WAIT_ON_EOF_ACK, WAIT_ON_ACK, TIMEOUT_ON_ACK, TIMEOUT_ON_EOF_ACK
 };
 
 void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, struct Connection * server);
-void process_server(int serverSocketNumber);
+void process_server(int serverSocketNumber, int error_rate);
 int checkArgs(int argc, char *argv[]);
 void handleZombies(int sig);
+STATE wait_on_ack(struct Connection * client);
+STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState);
 STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size);
+STATE wait_on_eof_ack(struct Connection * client);
 STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t 
 data_file, int buf_size, uint32_t * seq_num);
 
 
 // // Main control for server processes
-void process_server(int serverSocketNumber) {
+void process_server(int serverSocketNumber, int error_rate) {
 	pid_t pid = 0;
 	uint8_t buf[MAXPDUBUF]; // 1407
 	struct Connection *client = (struct Connection *) calloc(1, sizeof(struct Connection));
@@ -77,6 +81,7 @@ void process_server(int serverSocketNumber) {
 			if (pid == 0)
 			{
 				printf("Child fork() - child pid: %d\n", getpid());
+				sendErr_init(error_rate, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
 				process_client(serverSocketNumber, buf, recv_len, client);
 				exit(0);
 			}
@@ -112,9 +117,17 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 				break;
 
 			case WAIT_ON_ACK:
+				state = wait_on_ack(client);
 				break;
 
 			case WAIT_ON_EOF_ACK:
+				state = wait_on_eof_ack(client);
+				break;
+
+			case TIMEOUT_ON_ACK:
+				break;
+			
+			case TIMEOUT_ON_EOF_ACK:
 				break;
 
 			case DONE:
@@ -126,7 +139,6 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 
 STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size)
 {
-	int send_check = 0;
 	uint32_t seqNum = 0; 
 	int fileNameLen = 0;
 
@@ -148,13 +160,13 @@ STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int3
 	
 	if (((*data_file) = open(fname, O_RDONLY)) < 0) 
 	{
-		send_check = send_buf(response, fileNameLen, client, FNAME_BAD, &seqNum, buf);
+		send_buf(response, fileNameLen, client, FNAME_BAD, &seqNum, buf);
 		returnValue = DONE;
 	}
 
 	else 
 	{
-		send_check = send_buf(response, fileNameLen, client, FNAME_OK, &seqNum, buf);
+		send_buf(response, fileNameLen, client, FNAME_OK, &seqNum, buf);
 		returnValue = SEND_DATA;
 	}
 	
@@ -178,19 +190,86 @@ STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_l
 		case (0):
 			(*packet_len) = send_buf(buf, 1, client, END_OF_FILE, seq_num, packet);
 			returnValue = WAIT_ON_EOF_ACK;
-			printf("End of File\n");
-			exit(0);
 			break;
 		default:
 			(*packet_len) = send_buf(buf, len_read, client, DATA, seq_num, packet);
-			(*seq_num++);
-			printf("SEQUENCE NUMBER : %d\n", *seq_num);
-			returnValue = SEND_DATA;
-			// returnValue = WAIT_ON_ACK;
+			(*seq_num)++;
+			returnValue = WAIT_ON_ACK;
 			break;
 			
 	}
 	return returnValue;
+}
+
+STATE wait_on_ack(struct Connection * client)
+{
+	STATE returnValue = DONE;
+	uint32_t crc_check = 0;
+	uint8_t buf[MAXPDUBUF];
+	uint32_t len = MAXPDUBUF;
+	uint8_t flag = 0;
+	uint32_t seq_num = 0;
+	static int retryCount = 0;
+
+	if ((returnValue = processSelect(client, &retryCount, TIMEOUT_ON_ACK, SEND_DATA, DONE
+	)) == SEND_DATA)
+	{
+
+		crc_check = recv_buf(buf, len, client->sk_num, client, &flag, &seq_num);
+		// printPacket(buf, crc_check);
+		
+		// if crc error ignore packet
+		if(crc_check == CRC_ERROR)
+		{
+			returnValue = WAIT_ON_ACK;
+		}
+
+		else if (flag != RR)
+		{
+			printf("In wait_on_ack but its not an RR flag (this should never happen) is: %d\n", flag);
+			returnValue = DONE;
+		}
+
+	}
+	return returnValue;
+
+}
+
+STATE wait_on_eof_ack(struct Connection * client)
+{
+	STATE returnValue = DONE;
+	uint32_t crc_check = 0;
+	uint8_t buf[MAXPDUBUF];
+	int32_t len = MAXPDUBUF;
+	uint8_t flag = 0;
+	uint32_t seq_num = 0;
+	static int retryCount = 0;
+
+	if ((returnValue = processSelect(client, &retryCount, TIMEOUT_ON_EOF_ACK, DONE, DONE
+	)) == DONE)
+	{
+		{
+			crc_check = recv_buf(buf, len, client->sk_num, client, &flag, &seq_num);
+		}
+		// if crc error ignore packet
+		if (crc_check == CRC_ERROR)
+		{
+			returnValue = WAIT_ON_EOF_ACK;
+		}
+		else if (flag != EOF_ACK)
+		{
+			printf("In wait_on_eof_ack but its not an EOF_ACK flag (this should never happen) is: %d\n", flag);
+			returnValue = DONE;
+		}
+		else
+		{
+			printf("File transfer completed successfully.\n");
+			returnValue = DONE;
+		}	
+	}
+	
+	return returnValue;
+	
 }
 
 
@@ -205,7 +284,7 @@ int main ( int argc, char *argv[]  )
 		
 	serverSocketNumber = udpServerSetup(portNumber); // Setup UDP server
 
-	process_server(serverSocketNumber);
+	process_server(serverSocketNumber, atof(argv[1]));
 	
 	return 0;
 }
@@ -235,4 +314,38 @@ void handleZombies(int sig)
 {
 	int stat = 0;
 	while (waitpid(-1, &stat, WNOHANG) > 0);
+}
+
+// Function handles timeouts and retransmissions
+STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState) {
+    int returnValue = DataState;
+    (*retryCount)++;
+	
+    if (*retryCount > MAX_RETRANS) {
+        printf("Sent data %d times, no ACK, client is probably gone\n", MAX_RETRANS);
+        returnValue = DoneState;
+    } 
+	else {
+        // int timer = pollCall(1000); // Wait for 1 second        
+		// if (timer == connection->sk_num) 
+		// {
+        //     *retryCount = 0;
+        //     returnValue = DataState;
+        // } 
+		// else if (timer == -1) 
+		// {
+        //     printf("We timed out\n");
+        //     returnValue = TimeoutState;
+        // } 
+		// else {
+        //     // Handle any other unexpected return values from pollCall
+        //     printf("Unexpected return value from pollCall: %d\n", timer);
+		// 	exit(1);
+        // }
+        // printf("Socket Timer: %d\n", timer);
+		*retryCount = 0;
+		returnValue = DataState;
+    }
+
+    return returnValue;
 }

@@ -298,6 +298,10 @@ void PacketManager::printType(int flag, char * buf)
 		case 9:
 			MSG_PRINT("  -FNAME response");
 		break;
+
+        case 10:
+            MSG_PRINT("  -EOF");
+        break;
 		
 		case 16:
 			memcpy(&seqNumber, buf, 4);
@@ -316,9 +320,13 @@ void PacketManager::printType(int flag, char * buf)
 			seqNumber = ntohl(seqNumber);
 			MSG_PRINT("  -Timeout resent data #: %4u", seqNumber);
 		break;
-		
+
+        case 32:
+            MSG_PRINT("  -EOF Response");
+        break;
+
 		default:
-			MSG_PRINT("  -User defined ");
+			MSG_PRINT("  -User defined");
 		break;
 		
 	}

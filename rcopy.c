@@ -27,7 +27,7 @@
 #define MAXFILELEN 100
 #define MAXWINDOW 1073741824
 #define MAX_RETRANS 10
-#define START_SEQ_NUM 0 
+#define START_SEQ_NUM 1
 
 
 typedef enum State STATE;
@@ -91,7 +91,7 @@ STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeq
 		memcpy(buf + 4, &windowSize, 4);
 		memcpy(buf + 8, argv[1], fileNameLen);
 		
-		send_buf(buf, fileNameLen, server, flag, clientSeqNum, packet);
+		send_init(buf, fileNameLen, server, flag, clientSeqNum, packet);
 
         (*clientSeqNum)++; // Increment sequence number
 
@@ -139,6 +139,7 @@ void processFile (char * argv[]) {
 				break;
 		
 			case DONE:
+				exit(0);
 				break;
 			
 			case FILE_OK:
@@ -171,6 +172,9 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 	// }
 
 	data_len = recv_buf(data_buf, MAXPDUBUF, server->sk_num, server, &flag, &seq_num);
+	// printPacket(data_buf, data_len);
+	// printf("data length = %d\n", data_len);
+	// printf("Sequence Number: %d\n", seq_num);
 
 	/* do state RECV_DATA again if there is a crc error (don't send ack, don't write data) */
 	if (data_len == CRC_ERROR)
@@ -179,21 +183,26 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 	}
 	if (flag == END_OF_FILE) 
 	{
-		printf("Received EOF\n");
-	}
+		send_buf((uint8_t *)&seq_num, sizeof(seq_num), server, EOF_ACK, clientSeqNum, packet);
+		return DONE;
+	}	
 	else 
 	{
-		printf("Received DATA\n");
-		// Send ACK
-		// ackSeqNum = htonl(seq_num);
-		// send_buf();
-		// (*clientSeqNum)++;
+		ackSeqNum = htonl(seq_num);
+		send_buf((uint8_t *)&ackSeqNum, sizeof(ackSeqNum), server, RR, clientSeqNum, packet);
+		(*clientSeqNum)++;
 	}
 
+	// printf("Sequence Number: %d\n\n", seq_num);
 	if (seq_num == expected_seq_num)
 	{
+		// Extract data from buffer
+		int actual_data_len = data_len - 7;
+		uint8_t data[actual_data_len]; 
+		memcpy(data, data_buf + 7, actual_data_len);
+
 		expected_seq_num++;
-		// write(output_file, &data_buf, data_len);
+		write(output_file, &data, actual_data_len);
 	}
 	return RECV_DATA;
 
