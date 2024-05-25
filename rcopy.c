@@ -70,7 +70,8 @@ STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeq
 	// Setup UDP 
 	int portNumber = atoi(argv[7]);
 	int socketNum = setupUdpClientToServer(&server->address, argv[6], portNumber); 
-	
+
+
 	// Could not connet to to server
 	if (socketNum < 0) 
 	{
@@ -79,9 +80,13 @@ STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeq
 
 	else 
 	{
+        
+		// Setup poll table
+		setupPollSet();
+		addToPollSet(socketNum);
+		server->sk_num = socketNum; // Set socket number
 
-        server->sk_num = socketNum; // Set socket number
-
+		// Retrieve establishment variables
 		bufferSize = htonl(atoi(argv[4])); // Convert buffer size to network order
 		windowSize = htonl(atoi(argv[3])); // Convert window size to network order
 		fileNameLen = strlen(argv[1]);
@@ -96,7 +101,6 @@ STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeq
         (*clientSeqNum)++; // Increment sequence number
 
 		returnValue = FILENAME; 
-
 	}
 
 	return returnValue;
@@ -109,7 +113,7 @@ int main (int argc, char *argv[])
 
 	checkArgs(argc, argv);	
 
-	sendErr_init(atof(argv[5]), DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF); // Set error rate
+	sendErr_init(atof(argv[5]), DROP_ON, FLIP_OFF, DEBUG_ON, RSEED_OFF); // Set error rate
 		
 	processFile(argv);
 	
@@ -166,17 +170,16 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 	uint8_t packet[MAXPDUBUF];
 	static int32_t expected_seq_num = START_SEQ_NUM;
 
-	// if (pollCall(10000) == -1) {
-	// 	printf("Timeout after 10 seconds, server must be gone.\n");
-	// 	return DONE;
-	// }
 
 	data_len = recv_buf(data_buf, MAXPDUBUF, server->sk_num, server, &flag, &seq_num);
-	// printPacket(data_buf, data_len);
-	// printf("data length = %d\n", data_len);
-	// printf("Sequence Number: %d\n", seq_num);
 
-	/* do state RECV_DATA again if there is a crc error (don't send ack, don't write data) */
+
+	// Check for Flipped bits
+	if (in_cksum((unsigned short *)data_buf, data_len) != 0) 
+	{
+		return RECV_DATA; // Ignore incorrect packet and continue waiting for initial packet.
+	}
+
 	if (data_len == CRC_ERROR)
 	{
 		return RECV_DATA;
@@ -193,7 +196,6 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 		(*clientSeqNum)++;
 	}
 
-	// printf("Sequence Number: %d\n\n", seq_num);
 	if (seq_num == expected_seq_num)
 	{
 		// Extract data from buffer
@@ -233,11 +235,19 @@ STATE filename (char * fname, int32_t buf_size, struct Connection * server) {
 	uint32_t seq_num = 0;
 	int32_t recv_check = 0;
 	static int retryCount = 0;
-
+	printf("\nRetry Count: %d\n", retryCount);
 	
 	if ((returnValue = processSelect(server, &retryCount, START_STATE, FILE_OK, DONE)) == FILE_OK)
 	{
+		// Receive establishment Data Packet or Filename Establishment ACK
 		recv_check = recv_buf(packet, MAXPDUBUF, server->sk_num, server, &flag, &seq_num);
+
+		// Check for Flipped bits
+		if (in_cksum((unsigned short *)packet, recv_check) != 0) 
+		{
+			retryCount++;
+			returnValue = FILENAME; // Ignore incorrect packet and continue waiting for initial packet.
+		}
 		
 		if (recv_check == CRC_ERROR)
 		{
@@ -252,12 +262,9 @@ STATE filename (char * fname, int32_t buf_size, struct Connection * server) {
 		{
 			// file yes/no packet lost - instead its a data packet
 			returnValue = FILE_OK;
-
 		}
 
 	}
-
-	// printf("Next State: %d\n", returnValue);
 
 	return returnValue;
 
@@ -275,24 +282,16 @@ STATE processSelect(struct Connection *connection, int *retryCount, STATE Timeou
         returnValue = DoneState;
     } 
 	else {
-        // int timer = pollCall(1000); // Wait for 1 second        
-		// if (timer == connection->sk_num) 
-		// {
-        //     *retryCount = 0;
-        //     returnValue = DataState;
-        // } 
-		// else if (timer == -1) 
-		// {
-        //     printf("We timed out\n");
-        //     returnValue = TimeoutState;
-        // } 
-		// else {
-        //     // Handle any other unexpected return values from pollCall
-        //     printf("Unexpected return value from pollCall: %d\n", timer);
-		// 	exit(1);
-        // }
-        // printf("Socket Timer: %d\n", timer);
-		returnValue = DataState;
+		if (pollCall(1000) != -1) 
+		{
+            *retryCount = 0;
+            returnValue = DataState;
+        } 
+		else
+		{
+            printf("We timed out\n");
+            returnValue = TimeoutState;
+        } 
     }
 
     return returnValue;

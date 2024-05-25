@@ -23,6 +23,7 @@
 #include "pdu.h"
 #include "pollLib.h"
 #include "pdu.h"
+#include "window.h"
 
 #define MAXBUF 1400
 #define MAXPDUBUF 1407
@@ -39,19 +40,21 @@ enum State
 };
 
 void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, struct Connection * server);
-void process_server(int serverSocketNumber, int error_rate);
+void process_server(int serverSocketNumber, float error_rate);
 int checkArgs(int argc, char *argv[]);
 void handleZombies(int sig);
-STATE wait_on_ack(struct Connection * client);
+STATE wait_on_ack(struct Connection * client, struct window* input_window);
 STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState);
-STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size);
+STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size, struct window *serverWindow);
 STATE wait_on_eof_ack(struct Connection * client);
+STATE timeout_on_ack(struct Connection * client, uint8_t * packet, int32_t packet_len);
+STATE timeout_on_eof_ack (struct Connection * client, uint8_t * packet, int32_t packet_len);
 STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t 
-data_file, int buf_size, uint32_t * seq_num);
+data_file, int buf_size, uint32_t * seq_num, struct window *serverWindow);
 
 
 // // Main control for server processes
-void process_server(int serverSocketNumber, int error_rate) {
+void process_server(int serverSocketNumber, float error_rate) {
 	pid_t pid = 0;
 	uint8_t buf[MAXPDUBUF]; // 1407
 	struct Connection *client = (struct Connection *) calloc(1, sizeof(struct Connection));
@@ -67,6 +70,12 @@ void process_server(int serverSocketNumber, int error_rate) {
 		// Wait for establishment packet from incoming clients (window size, filename, & buffer size)
 		pollCall(0);
 		recv_len = recv_buf(buf, MAXPDUBUF, serverSocketNumber, client, &flag, &seq_num);
+		
+		// Check for Flipped bits
+		if (in_cksum((unsigned short *)buf, recv_len) != 0) 
+		{
+			continue; // Ignore incorrect packet and continue waiting for initial packet.
+		}
 
 		if (recv_len != CRC_ERROR) 
 		{
@@ -81,7 +90,8 @@ void process_server(int serverSocketNumber, int error_rate) {
 			if (pid == 0)
 			{
 				printf("Child fork() - child pid: %d\n", getpid());
-				sendErr_init(error_rate, DROP_ON, FLIP_ON, DEBUG_ON, RSEED_OFF);
+				printf("Error: %f\n", error_rate);
+				sendErr_init(error_rate, DROP_ON, FLIP_OFF, DEBUG_ON, RSEED_OFF);
 				process_client(serverSocketNumber, buf, recv_len, client);
 				exit(0);
 			}
@@ -89,6 +99,7 @@ void process_server(int serverSocketNumber, int error_rate) {
 
 	}
 }
+
 
 void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, struct Connection * client) 
 {
@@ -99,6 +110,7 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 	int32_t buf_size = 0;
 	int32_t window_size = 0;
 	uint32_t seq_num = START_SEQ_NUM;
+	struct window *serverWindow = (struct window *) calloc(1, sizeof(struct window));
 
 	while (state != DONE)
 	{
@@ -109,15 +121,15 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 				break;
 			
 			case FILENAME:
-				state = filename(client, buf, recv_len, &data_file, &buf_size, &window_size);
+				state = filename(client, buf, recv_len, &data_file, &buf_size, &window_size, serverWindow);
 				break;
 			
 			case SEND_DATA:
-				state = send_data(client, packet, &packet_len, data_file, buf_size, &seq_num);
+				state = send_data(client, packet, &packet_len, data_file, buf_size, &seq_num, serverWindow);
 				break;
 
 			case WAIT_ON_ACK:
-				state = wait_on_ack(client);
+				state = wait_on_ack(client, serverWindow);
 				break;
 
 			case WAIT_ON_EOF_ACK:
@@ -125,9 +137,11 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 				break;
 
 			case TIMEOUT_ON_ACK:
+				state = timeout_on_ack(client, packet, packet_len);
 				break;
 			
 			case TIMEOUT_ON_EOF_ACK:
+				state = timeout_on_eof_ack(client, packet, packet_len);
 				break;
 
 			case DONE:
@@ -137,7 +151,22 @@ void process_client(int32_t serverSocketNumber, uint8_t *buf, int32_t recv_len, 
 	}
 }
 
-STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size)
+
+STATE timeout_on_ack(struct Connection * client, uint8_t * packet, int32_t packet_len) 
+{
+	safeSendto(client->sk_num, packet, packet_len, 0, (struct sockaddr *)&client->address, sizeof(client->address));
+	return WAIT_ON_ACK;
+}
+
+
+STATE timeout_on_eof_ack (struct Connection * client, uint8_t * packet, int32_t packet_len)
+{
+	safeSendto(client->sk_num, packet, packet_len, 0, (struct sockaddr *)&client->address, sizeof(client->address));
+	return WAIT_ON_EOF_ACK;
+}
+
+
+STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size, struct window *serverWindow)
 {
 	uint32_t seqNum = 0; 
 	int fileNameLen = 0;
@@ -146,17 +175,25 @@ STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int3
 	char fname[MAX_FILE];
 	STATE returnValue = DONE;
 
-	// Extract filename from packet
+	// Extract Buffer Size
 	memcpy(buf_size, buf + 7, 4);
 	*buf_size = ntohl(*buf_size);
 
+	// Extract Window Size
 	memcpy(window_size, buf+ 11, 4);
+	*window_size = ntohl(*window_size);
 
+	// Extrace File Name
 	memcpy(fname, buf + NOTFILENAME, recv_len - NOTFILENAME);
 	int fileLen = recv_len - NOTFILENAME;
 	fname[fileLen] = '\0';
 
+	// Create socket associated with client
 	client->sk_num = safeGetUdpSocket();
+	
+	// Setup Poll table for poll()
+	setupPollSet();
+	addToPollSet(client->sk_num);
 	
 	if (((*data_file) = open(fname, O_RDONLY)) < 0) 
 	{
@@ -169,17 +206,21 @@ STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int3
 		send_buf(response, fileNameLen, client, FNAME_OK, &seqNum, buf);
 		returnValue = SEND_DATA;
 	}
+
+	// Initialize Window Buffer
+	window_create(serverWindow, *window_size);
 	
 	return returnValue;
 }
 
-STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t data_file, int buf_size, uint32_t * seq_num)
+STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t data_file, int buf_size, uint32_t * seq_num, struct window *serverWindow)
 {
 	uint8_t buf[MAXPDUBUF];
 	int32_t len_read = 0;
 	STATE returnValue = DONE;
 
 	len_read = read(data_file, buf, buf_size);
+	buf[buf_size] = '\0';
 
 	switch (len_read)
 	{
@@ -192,8 +233,18 @@ STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_l
 			returnValue = WAIT_ON_EOF_ACK;
 			break;
 		default:
+
 			(*packet_len) = send_buf(buf, len_read, client, DATA, seq_num, packet);
+			// printf("packet Length: %d\n", *packet_len);
+
+			// Store sent packet into buffer until receiving RR
+			window_add(serverWindow, *seq_num, packet, *packet_len);
+			window_CURUpdate(serverWindow);
+			window_print(serverWindow);
+
+			// Increment Sequence Number
 			(*seq_num)++;
+
 			returnValue = WAIT_ON_ACK;
 			break;
 			
@@ -201,7 +252,7 @@ STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_l
 	return returnValue;
 }
 
-STATE wait_on_ack(struct Connection * client)
+STATE wait_on_ack(struct Connection * client, struct window* input_window)
 {
 	STATE returnValue = DONE;
 	uint32_t crc_check = 0;
@@ -211,13 +262,20 @@ STATE wait_on_ack(struct Connection * client)
 	uint32_t seq_num = 0;
 	static int retryCount = 0;
 
+	// Check for timeout
 	if ((returnValue = processSelect(client, &retryCount, TIMEOUT_ON_ACK, SEND_DATA, DONE
 	)) == SEND_DATA)
 	{
 
+		// Receive RR buffer from client
 		crc_check = recv_buf(buf, len, client->sk_num, client, &flag, &seq_num);
-		// printPacket(buf, crc_check);
-		
+
+		// Check for flipped bits/corrupted packets
+		if (in_cksum((unsigned short *)buf, crc_check) != 0) 
+		{
+			return WAIT_ON_ACK; // Ignore incorrect packet and continue waiting for initial packet.
+		}
+				
 		// if crc error ignore packet
 		if(crc_check == CRC_ERROR)
 		{
@@ -229,8 +287,15 @@ STATE wait_on_ack(struct Connection * client)
 			printf("In wait_on_ack but its not an RR flag (this should never happen) is: %d\n", flag);
 			returnValue = DONE;
 		}
-
 	}
+
+	if (returnValue == SEND_DATA)
+	{
+		window_RRUpdate(input_window, seq_num);
+		window_remove(input_window, seq_num);
+		// window_print(input_window);
+	}
+
 	return returnValue;
 
 }
@@ -245,12 +310,20 @@ STATE wait_on_eof_ack(struct Connection * client)
 	uint32_t seq_num = 0;
 	static int retryCount = 0;
 
+	// Check for timeout
 	if ((returnValue = processSelect(client, &retryCount, TIMEOUT_ON_EOF_ACK, DONE, DONE
 	)) == DONE)
 	{
+		
+		// Receive EOF RR from client
+		crc_check = recv_buf(buf, len, client->sk_num, client, &flag, &seq_num);
+		
+		// Check for flipped bits/corrupted packets
+		if (in_cksum((unsigned short *)buf, crc_check) != 0) 
 		{
-			crc_check = recv_buf(buf, len, client->sk_num, client, &flag, &seq_num);
+			return WAIT_ON_EOF_ACK; // Ignore incorrect packet and continue waiting for initial packet.
 		}
+
 		// if crc error ignore packet
 		if (crc_check == CRC_ERROR)
 		{
@@ -276,7 +349,6 @@ STATE wait_on_eof_ack(struct Connection * client)
 
 int main ( int argc, char *argv[]  )
 { 
-	
 	uint32_t serverSocketNumber = 0;			
 	int portNumber = 0;
 
@@ -316,6 +388,8 @@ void handleZombies(int sig)
 	while (waitpid(-1, &stat, WNOHANG) > 0);
 }
 
+
+
 // Function handles timeouts and retransmissions
 STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState) {
     int returnValue = DataState;
@@ -326,25 +400,22 @@ STATE processSelect(struct Connection *connection, int *retryCount, STATE Timeou
         returnValue = DoneState;
     } 
 	else {
-        // int timer = pollCall(1000); // Wait for 1 second        
-		// if (timer == connection->sk_num) 
-		// {
-        //     *retryCount = 0;
-        //     returnValue = DataState;
-        // } 
-		// else if (timer == -1) 
-		// {
-        //     printf("We timed out\n");
-        //     returnValue = TimeoutState;
-        // } 
-		// else {
-        //     // Handle any other unexpected return values from pollCall
-        //     printf("Unexpected return value from pollCall: %d\n", timer);
-		// 	exit(1);
-        // }
-        // printf("Socket Timer: %d\n", timer);
-		*retryCount = 0;
-		returnValue = DataState;
+        int timer = pollCall(1000); // Wait for 1 second        
+		if (timer != -1) 
+		{
+            *retryCount = 0;
+            returnValue = DataState;
+        } 
+		else if (timer == -1) 
+		{
+            printf("We timed out\n");
+            returnValue = TimeoutState;
+        } 
+		else {
+            // Handle any other unexpected return values from pollCall
+            printf("Unexpected return value from pollCall: %d\n", timer);
+			exit(1);
+        }
     }
 
     return returnValue;

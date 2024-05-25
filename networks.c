@@ -23,6 +23,8 @@
 // This function sets the server socket. The function returns the server
 // socket number and prints the port number to the screen.  
 
+
+
 int tcpServerSetup(int serverPort)
 {
 	// Opens a server socket, binds that socket, prints out port, call listens

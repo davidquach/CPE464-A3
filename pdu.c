@@ -49,7 +49,7 @@ void printPDU(uint8_t * PDU, int pduLength) {
     
     // Verify checksum
     if (in_cksum((unsigned short *)PDU, pduLength) != 0) {
-        printf("Checksum is wrong\n");//
+        printf("Checksum is wrong\n");
         exit(1);
     }
 
