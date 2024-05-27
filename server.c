@@ -31,9 +31,6 @@
 	#define START_SEQ_NUM 1
 	#define NOTFILENAME 15
 	#define MAX_RETRANS 10
-
-	int32_t final_packet_len = 0;
-	int32_t final_packet_seq = 0;
 	
 
 	typedef enum State STATE;
@@ -47,15 +44,15 @@
 	void process_server(int serverSocketNumber, float error_rate);
 	int checkArgs(int argc, char *argv[]);
 	void handleZombies(int sig);
-	STATE wait_on_ack(struct Connection * client, struct window* input_window, uint32_t *last_seq_num, int32_t packet_len, uint32_t * seq_num, int * finished, int32_t *data_packet_len);
+	STATE wait_on_ack(struct Connection * client, struct window* input_window, uint32_t *last_seq_num, int32_t packet_len, uint32_t * seq_num, int * finished, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq);
 	STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState, struct window* input_window, int * finished);
 	STATE filename(struct Connection * client, uint8_t * buf, int32_t recv_len, int32_t * data_file, int32_t * buf_size, int32_t * window_size, struct window *serverWindow, int32_t *data_packet_len);
 	STATE wait_on_eof_ack(struct Connection * client, struct window* input_window, uint32_t last_seq_num, int32_t *eof_len);
-	STATE timeout_on_ack(struct Connection * client, uint8_t * packet, struct window *serverWindow, int32_t *data_packet_len);
+	STATE timeout_on_ack(struct Connection * client, uint8_t * packet, struct window *serverWindow, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq);
 	STATE timeout_on_eof_ack (struct Connection * client, uint8_t * packet, int32_t packet_len);
-	STATE send_srej(struct Connection * client, struct window* input_window, uint8_t *srej_packet, uint32_t data_packet_len, uint32_t * seq_num);
+	STATE send_srej(struct Connection * client, struct window* input_window, uint8_t *srej_packet, uint32_t data_packet_len, uint32_t * seq_num, int32_t * final_packet_len, int32_t * final_packet_seq);
 	STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t 
-	data_file, int buf_size, uint32_t * seq_num, uint32_t *last_seq_num, struct window *serverWindow, int32_t *eof_len, int * finished, int32_t *data_packet_len);
+	data_file, int buf_size, uint32_t * seq_num, uint32_t *last_seq_num, struct window *serverWindow, int32_t *eof_len, int * finished, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq);
 
 
 	// // Main control for server processes
@@ -120,8 +117,8 @@
 
 		int finished = 0; // Indiates EOF has been transmitted (Window is Closed)
 		int32_t data_packet_len = 0;
-		// int32_t final_packet_len = 0;
-		// int32_t final_packet_seq = 0;
+		int32_t final_packet_len = 0;
+		int32_t final_packet_seq = 0;
 
 		while (state != DONE)
 		{
@@ -136,11 +133,11 @@
 					break;
 				
 				case SEND_DATA:
-					state = send_data(client, packet, &packet_len, data_file, buf_size, &seq_num, &last_seq_num, serverWindow, &eof_len, &finished, &data_packet_len);
+					state = send_data(client, packet, &packet_len, data_file, buf_size, &seq_num, &last_seq_num, serverWindow, &eof_len, &finished, &data_packet_len, &final_packet_len, &final_packet_seq);
 					break;
 
 				case WAIT_ON_ACK:
-					state = wait_on_ack(client, serverWindow, &last_seq_num, packet_len, &seq_num, &finished, &data_packet_len);
+					state = wait_on_ack(client, serverWindow, &last_seq_num, packet_len, &seq_num, &finished, &data_packet_len, &final_packet_len, &final_packet_seq);
 					break;
 
 				case WAIT_ON_EOF_ACK:
@@ -148,7 +145,7 @@
 					break;
 
 				case TIMEOUT_ON_ACK:
-					state = timeout_on_ack(client, packet, serverWindow, &data_packet_len);
+					state = timeout_on_ack(client, packet, serverWindow, &data_packet_len, &final_packet_len, &final_packet_seq);
 					break;
 				
 				case TIMEOUT_ON_EOF_ACK:
@@ -164,7 +161,7 @@
 
 
 	// Retransmission of lowest packet in window
-	STATE timeout_on_ack(struct Connection * client, uint8_t * packet, struct window *serverWindow, int32_t *data_packet_len) 
+	STATE timeout_on_ack(struct Connection * client, uint8_t * packet, struct window *serverWindow, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq) 
 	{
 		// Resent lowest packet in window buffer
 		uint8_t flag = DATA_TIMEOUT;
@@ -176,8 +173,8 @@
 		// printf("Retransmitting Seq: %d\n", seq_num);
 
 		uint32_t new_packet_len = 0;
-		if (seq_num == final_packet_seq) {
-			new_packet_len = final_packet_len;
+		if (seq_num == *final_packet_seq) {
+			new_packet_len = *final_packet_len;
 		}
 		else {
 			new_packet_len = *data_packet_len;
@@ -258,7 +255,7 @@
 		return returnValue;
 	}
 
-	STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t data_file, int buf_size, uint32_t * seq_num, uint32_t *last_seq_num,  struct window *serverWindow, int32_t *eof_len, int * finished, int32_t *data_packet_len)
+	STATE send_data (struct Connection *client, uint8_t * packet, int32_t * packet_len, int32_t data_file, int buf_size, uint32_t * seq_num, uint32_t *last_seq_num,  struct window *serverWindow, int32_t *eof_len, int * finished, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq)
 	{
 		uint8_t buf[MAXPDUBUF];
 		int32_t len_read = 0;
@@ -302,8 +299,8 @@
 				
 				// Store final packet length that may not be size of buffer
 				if (*packet_len != *data_packet_len) {
-					final_packet_len = *packet_len;
-					final_packet_seq = *seq_num;
+					*final_packet_len = *packet_len;
+					*final_packet_seq = *seq_num;
 				}
 
 				// Store sent packet into buffer until receiving RR
@@ -321,7 +318,7 @@
 		return returnValue;
 	}
 
-	STATE wait_on_ack(struct Connection * client, struct window* input_window, uint32_t *last_seq_num, int32_t packet_len, uint32_t * cur_seq, int * finished, int32_t *data_packet_len)
+	STATE wait_on_ack(struct Connection * client, struct window* input_window, uint32_t *last_seq_num, int32_t packet_len, uint32_t * cur_seq, int * finished, int32_t *data_packet_len, int32_t * final_packet_len, int32_t * final_packet_seq)
 	{
 		STATE returnValue = DONE;
 		uint32_t crc_check = 0;
@@ -355,11 +352,11 @@
 			else if (flag == SREJ)
 			{
 				if (*finished == 0) {
-					send_srej(client, input_window, buf, *data_packet_len, cur_seq);				
+					send_srej(client, input_window, buf, *data_packet_len, cur_seq, final_packet_len, final_packet_seq);				
 					returnValue = SEND_DATA;
 				}
 				else {
-					send_srej(client, input_window, buf, *data_packet_len, cur_seq);				
+					send_srej(client, input_window, buf, *data_packet_len, cur_seq, final_packet_len, final_packet_seq);				
 					returnValue = SEND_DATA;
 				}
 			}
@@ -383,7 +380,7 @@
 			memcpy(&rr_seq, buf+7, 4);
 			rr_seq = ntohl(rr_seq);	
 
-			if (rr_seq == final_packet_seq + 1) 
+			if (rr_seq == *final_packet_seq + 1) 
 			{
 				// printf("Penis\n");
 				return WAIT_ON_EOF_ACK;
@@ -401,7 +398,7 @@
 
 	}
 
-	STATE send_srej(struct Connection * client, struct window* input_window, uint8_t *srej_packet, uint32_t data_packet_len, uint32_t * seq_num) {
+	STATE send_srej(struct Connection * client, struct window* input_window, uint8_t *srej_packet, uint32_t data_packet_len, uint32_t * seq_num, int32_t * final_packet_len, int32_t * final_packet_seq) {
 		uint8_t flag = SREJ_RETRAN;
 		uint32_t packet_len = 0;
 
@@ -418,9 +415,9 @@
 		printPacket(retransmission, 12);
 
 
-		if (srej_seq == final_packet_seq)
+		if (srej_seq == *final_packet_seq)
 		{
-			packet_len = final_packet_len;
+			packet_len = *final_packet_len;
 		}
 		else {
 			packet_len = data_packet_len;

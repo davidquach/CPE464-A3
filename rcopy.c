@@ -44,17 +44,13 @@ void processFile (char * argv[]);
 STATE filename (char * fname, int32_t buf_size, struct Connection * server);
 STATE processSelect(struct Connection *connection, int *retryCount, STATE TimeoutState, STATE DataState, STATE DoneState);
 STATE file_ok(int * outputFileFd, char *outputFileName, struct window *clientWindow, int32_t window_size);
-STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected,  uint32_t *highest);
-STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest);
-STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest);
+STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected,  uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq);
+STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq);
+STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq);
 void writeDisk(int outputFileFd, uint32_t packet_len, uint8_t *packet, struct window *clientWindow, uint32_t seq_num);
 
-uint32_t data_packet_len = 0;
-uint32_t final_packet_len = 0;
-uint32_t final_packet_seq = 0;
-uint32_t eof_seq = 0;
 
-STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeqNum) 
+STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeqNum, uint32_t *data_packet_len) 
 {
 	uint8_t packet[MAXPDUBUF]; // Includes PDU header and data payload (1407)
 	uint8_t buf[MAXBUF]; // Includes data payload (1400)
@@ -92,7 +88,7 @@ STATE start_state(char ** argv, struct Connection * server, uint32_t * clientSeq
 
 		// Retrieve establishment variables
 		bufferSize = htonl(atoi(argv[4])); // Convert buffer size to network order
-		data_packet_len = 7 + atoi(argv[4]);
+		*data_packet_len = 7 + atoi(argv[4]);
 
 		windowSize = htonl(atoi(argv[3])); // Convert window size to network order
 		fileNameLen = strlen(argv[1]);
@@ -136,6 +132,13 @@ void processFile (char * argv[]) {
 	uint32_t expected = 1;
 	uint32_t highest = 1;
 
+
+	uint32_t data_packet_len = 0;
+	uint32_t final_packet_len = 0;
+	uint32_t final_packet_seq = 0;
+	uint32_t eof_seq = 0;
+
+
 	while (state != DONE) 
 	{
 		switch (state)
@@ -143,7 +146,7 @@ void processFile (char * argv[]) {
 
 			// START: establish connection with server and transmit filename, buffer size, and window size
 			case START_STATE: 
-				state = start_state(argv, server, &clientSeqNum);
+				state = start_state(argv, server, &clientSeqNum, &data_packet_len);
 				break;
 				
 			case FILENAME:
@@ -159,15 +162,15 @@ void processFile (char * argv[]) {
 				break;
 			
 			case RECV_DATA:
-				state = recv_data(output_file_fd, server, &clientSeqNum, clientWindow, &expected, &highest);
+				state = recv_data(output_file_fd, server, &clientSeqNum, clientWindow, &expected, &highest, &data_packet_len, &final_packet_len, &final_packet_seq, &eof_seq);
 				break;
 
 			case BUFFER:
-				state = buffer(output_file_fd, server, &clientSeqNum, clientWindow, &expected, &highest);
+				state = buffer(output_file_fd, server, &clientSeqNum, clientWindow, &expected, &highest, &data_packet_len, &final_packet_len, &final_packet_seq, &eof_seq);
 				break;
 
 			case FLUSH:
-				state = flush(output_file_fd, server,  &clientSeqNum, clientWindow, &expected, &highest);
+				state = flush(output_file_fd, server,  &clientSeqNum, clientWindow, &expected, &highest, &data_packet_len, &final_packet_len, &final_packet_seq, &eof_seq);
 				break;
 
 			case WAIT_FILE_ACK:
@@ -177,7 +180,7 @@ void processFile (char * argv[]) {
 	}
 }
 
-STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest)
+STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq)
 {
 	
 	uint32_t seq_num = 0;
@@ -206,21 +209,21 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 	// Populate Global Variables
 	if (flag == DATA)
 	{
-		if (data_len != data_packet_len)
+		if (data_len != *data_packet_len)
 		{
-			final_packet_len = data_len;
-			final_packet_seq = seq_num;
+			*final_packet_len = data_len;
+			*final_packet_seq = seq_num;
 			// printf("Final Packet Length: %d (Seq: %d)\n", final_packet_len, seq_num);
 			// printf("Buffer: %s\n", data_buf);
 			// printf("Final_packet_seq: %d\n", final_packet_seq);
 		}
 		else 
 		{
-			data_packet_len = data_len;
+			*data_packet_len = data_len;
 		}
 	}
 	else if (flag == END_OF_FILE) {
-		eof_seq = seq_num;
+		*eof_seq = seq_num;
 	}
 
 
@@ -295,7 +298,7 @@ STATE recv_data(int32_t output_file, struct Connection * server, uint32_t * clie
 
 }
 
-STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest)
+STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq)
 {
 	// printf("\nIn Buffering State\n\n");
 
@@ -344,16 +347,16 @@ STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientS
 
 	if (flag == DATA)
 	{
-		if (data_len != data_packet_len)
+		if (data_len != *data_packet_len)
 		{
-			final_packet_len = data_len;
-			final_packet_seq = seq_num;
+			*final_packet_len = data_len;
+			*final_packet_seq = seq_num;
 			// printf("Final Packet Length: %d (Seq: %d)\n", final_packet_len, seq_num);
 			// printf("Buffer: %s\n", data_buf);
 		}
 	}
 	else if (flag == END_OF_FILE) {
-		eof_seq = seq_num;
+		*eof_seq = seq_num;
 	}
 
 		
@@ -409,7 +412,7 @@ STATE buffer(int32_t output_file, struct Connection * server, uint32_t * clientS
 	return BUFFER;
 }
 
-STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest)
+STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSeqNum, struct window *clientWindow, uint32_t *expected, uint32_t *highest, uint32_t *data_packet_len, uint32_t *final_packet_len, uint32_t *final_packet_seq, uint32_t *eof_seq)
 {
 	// printf("Flushing\n");
 
@@ -437,7 +440,7 @@ STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSe
 		// Write to disk
 		uint32_t packet_len = 0;
 
-		if (cur_seq == eof_seq)
+		if (cur_seq == *eof_seq)
 		{
 			printf("\nFinished Transmission\n");
 
@@ -447,12 +450,12 @@ STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSe
 			
 			exit(0);
 		}
-		else if (cur_seq == final_packet_seq)
+		else if (cur_seq == *final_packet_seq)
 		{
-			packet_len = final_packet_len;
+			packet_len = *final_packet_len;
 		}
 		else
-			packet_len = data_packet_len;
+			packet_len = *data_packet_len;
 
 		int actual_data_len = packet_len - 7;//
 		uint8_t data[actual_data_len];
@@ -496,7 +499,7 @@ STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSe
 		uint8_t rr_packet[MAXPDUBUF];
 		uint32_t net_expected = htonl(*expected);
 
-		if ((*expected) == eof_seq)
+		if ((*expected) == *eof_seq)
 		{
 			send_buf((uint8_t*)&net_expected, sizeof(net_expected), server, RR, clientSeqNum, rr_packet);
 			send_buf((uint8_t*)&net_expected, sizeof(net_expected), server, EOF_ACK, clientSeqNum, rr_packet);
@@ -508,13 +511,13 @@ STATE flush(int32_t output_file, struct Connection * server, uint32_t * clientSe
 
 
 		uint32_t packet_len = 0;
-		if (*expected == final_packet_seq)
+		if (*expected == *final_packet_seq)
 		{
 			// printf("ASdnsdgbsdiug");
-			packet_len = final_packet_len;
+			packet_len = *final_packet_len;
 		}
 		else
-			packet_len = data_packet_len;
+			packet_len = *data_packet_len;
 
 		// printf("PENIS\n");
 		// printf("Expected: %d\nCurrent Seq: %d\n", *expected, cur_seq);
@@ -572,7 +575,7 @@ STATE file_ok(int * outputFileFd, char *outputFileName, struct window *clientWin
 
 	if ((*outputFileFd = open(outputFileName, O_CREAT | O_TRUNC | O_WRONLY, 0600)) < 0)
 	{
-		perror("File open error: ");
+		perror("Error on open of output file: ");
 		returnValue = DONE;
 	}
 	else

@@ -14,16 +14,16 @@
 #define chkSumLen 2
 #define flagLen 1
 
-#define FNAME_BAD 7
-#define FNAME_OK 9
-#define DATA 16
-#define END_OF_FILE 10
-#define FILENAME_INIT 8
 #define RR 5
-#define EOF_ACK 32
-#define DATA_TIMEOUT 18
 #define SREJ 6
+#define FNAME_BAD 7
+#define FILENAME_INIT 8
+#define FNAME_OK 9
+#define END_OF_FILE 10
 #define SREJ_RETRAN 17
+#define DATA_TIMEOUT 18
+#define DATA 16
+#define EOF_ACK 32
 
 
 
