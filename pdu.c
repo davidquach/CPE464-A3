@@ -21,6 +21,9 @@
 #define FILENAME_INIT 8
 #define RR 5
 #define EOF_ACK 32
+#define DATA_TIMEOUT 18
+#define SREJ 6
+#define SREJ_RETRAN 17
 
 
 
@@ -66,7 +69,7 @@ void printPDU(uint8_t * PDU, int pduLength) {
     int payloadLen = pduLength - seqNumLen - chkSumLen - flagLen; // Calculate payload length
     uint8_t payload[payloadLen];
     memcpy(payload,  PDU + seqNumLen + chkSumLen + flagLen, payloadLen); // Retrieve payload
-    
+    payload[payloadLen] = '\0'; 
     // Print PDU
     printf("\nSequence Number: %d\n", hostSequenceNum);
     printf("Flag: %d\n", flag);
@@ -79,10 +82,10 @@ void printPDU(uint8_t * PDU, int pduLength) {
 void printPacket(uint8_t * PDU, int pduLength) {
     
     // Verify checksum
-    if (in_cksum((unsigned short *)PDU, pduLength) != 0) {
-        printf("Checksum is wrong\n");
-        exit(1);
-    }
+    // if (in_cksum((unsigned short *)PDU, pduLength) != 0) {
+    //     printf("Checksum is wrong\n");
+    //     exit(1);
+    // }
 
     // Declare working buffers
     uint32_t netSequenceNum = 0;
@@ -140,6 +143,7 @@ void printPacket(uint8_t * PDU, int pduLength) {
         printf("\n===EOF PACKET==========================================================================\n");
         printf(" - Sequence Number: %d  ", hostSequenceNum);
         printf("   Flag: %d\n", flag);
+        printf(" * Data: %s\n", payload);
         printf("========================================================================================\n");
 
     }

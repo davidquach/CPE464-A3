@@ -18,6 +18,24 @@ struct window {
     struct buffer* window_buffer;
 };
 
+int window_isvalid(struct window* input_window, uint32_t seq_num) {
+    uint32_t index = (seq_num) % input_window->size;
+    return input_window->window_buffer[index].valid;
+}
+
+uint8_t* window_get_lower(struct window* input_window) {
+    uint32_t index = (input_window->lower) % input_window->size;
+    return input_window->window_buffer[index].packet;
+}
+
+uint8_t* window_get_packet(struct window* input_window, uint32_t seq_num) {
+    uint32_t index = (seq_num) % input_window->size;
+    return input_window->window_buffer[index].packet;
+}
+
+int window_full(struct window* input_window) {
+    return (input_window->current == input_window->upper);
+}
 
 // Creates server buffer based off window size input
 void window_create(struct window* input_window, int window_size) {
@@ -35,8 +53,8 @@ void window_create(struct window* input_window, int window_size) {
 }
 
 // Updates lower and upper to match recent RR
-void window_RRUpdate(struct window* input_window, uint32_t seq_num) {
-    input_window->lower = seq_num;
+void window_slide(struct window* input_window, uint32_t rr_num) {
+    input_window->lower = rr_num;
     input_window->upper = input_window->lower + input_window->size;
 }
 
@@ -106,7 +124,25 @@ void window_print(struct window* input_window) {
     }
 }
 
-    
+void window_print_test(struct window* input_window, uint32_t data_len, uint32_t eof_len, uint32_t eof_seq) {
+    for (int i = 0; i < input_window->size; i++) 
+    {
+        if (input_window->window_buffer[i].valid == 1)
+        {
+            printf("Index %d:", i);
+            
+            if (i == 7) {
+                printPacket(input_window->window_buffer[i].packet, eof_seq);
+
+            }
+            else {
+                printPacket(input_window->window_buffer[i].packet, data_len);
+            }
+
+            printf("\n");
+        }
+    }
+}
 
 
 

@@ -23,6 +23,10 @@
 #define FILENAME_INIT 8
 #define RR 5
 #define EOF_ACK 32
+#define DATA_TIMEOUT 18
+#define SREJ 6
+#define SREJ_RETRAN 17
+
 
 
 int createPDU(uint8_t *pduBuffer, uint32_t sequenceNumber, uint8_t flag, uint8_t *payload, int payloadLen);
